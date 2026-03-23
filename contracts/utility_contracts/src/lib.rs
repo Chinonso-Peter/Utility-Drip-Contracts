@@ -99,7 +99,7 @@ impl UtilityContract {
         env.storage().instance().set(&DataKey::Meter(meter_id), &meter);
 
         if !was_active && meter.balance > 0 {
-            env.events().publish((Symbol::new(&env, "MeterActive"), meter_id), now);
+            env.events().publish((soroban_sdk::symbol_short!("Active"), meter_id), now);
         }
     }
 
@@ -154,12 +154,12 @@ impl UtilityContract {
         env.storage().instance().set(&DataKey::Meter(meter_id), &meter);
 
         if was_active && meter.balance <= 0 {
-            env.events().publish((Symbol::new(&env, "MeterInactive"), meter_id), now);
+            env.events().publish((soroban_sdk::symbol_short!("Inactive"), meter_id), now);
         }
 
         // Emit UsageReported event
         env.events().publish(
-            (Symbol::new(&env, "UsageReported"), meter_id),
+            (soroban_sdk::symbol_short!("Usage"), meter_id),
             (units_consumed, cost)
         );
     }
@@ -191,7 +191,7 @@ impl UtilityContract {
     }
 
     pub fn reset_cycle_usage(env: Env, meter_id: u64) {
-        let mut meter: Meter = env.storage().instance().get(&DataKey::Meter(meter_id)).ok_or("Meter not found").unwrap();
+        let mut meter: Meter = env.storage().instance().get::<DataKey, Meter>(&DataKey::Meter(meter_id)).ok_or("Meter not found").unwrap();
         meter.provider.require_auth();
         
         meter.usage_data.current_cycle_watt_hours = 0;
@@ -264,4 +264,5 @@ impl UtilityContract {
     }
 }
 
+#[cfg(test)]
 mod test;
