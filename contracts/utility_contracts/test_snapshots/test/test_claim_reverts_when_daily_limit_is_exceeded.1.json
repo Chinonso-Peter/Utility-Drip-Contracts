@@ -221,10 +221,34 @@
                           },
                           {
                             "key": {
+                              "symbol": "claimed_this_hour"
+                            },
+                            "val": {
+                              "i128": "0"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "heartbeat"
+                            },
+                            "val": {
+                              "u64": "0"
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "is_active"
                             },
                             "val": {
                               "bool": true
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "last_claim_time"
+                            },
+                            "val": {
+                              "u64": "0"
                             }
                           },
                           {
@@ -237,6 +261,14 @@
                           },
                           {
                             "key": {
+                              "symbol": "max_flow_rate_per_hour"
+                            },
+                            "val": {
+                              "i128": "36000"
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "provider"
                             },
                             "val": {
@@ -245,7 +277,7 @@
                           },
                           {
                             "key": {
-                              "symbol": "rate_per_second"
+                              "symbol": "rate_per_unit"
                             },
                             "val": {
                               "i128": "10"
@@ -257,6 +289,55 @@
                             },
                             "val": {
                               "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "usage_data"
+                            },
+                            "val": {
+                              "map": [
+                                {
+                                  "key": {
+                                    "symbol": "current_cycle_watt_hours"
+                                  },
+                                  "val": {
+                                    "i128": "0"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "last_reading_timestamp"
+                                  },
+                                  "val": {
+                                    "u64": "0"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "peak_usage_watt_hours"
+                                  },
+                                  "val": {
+                                    "i128": "0"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "precision_factor"
+                                  },
+                                  "val": {
+                                    "i128": "1000"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "total_watt_hours"
+                                  },
+                                  "val": {
+                                    "i128": "0"
+                                  }
+                                }
+                              ]
                             }
                           },
                           {

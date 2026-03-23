@@ -5,6 +5,193 @@ use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{Address, Env};
 
 #[test]
+fn test_utility_flow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(UtilityContract, ());
+    let client = UtilityContractClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let oracle = Address::generate(&env);
+
+    client.set_oracle(&oracle);
+
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin.clone());
+    let token = token::Client::new(&env, &token_address);
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+    token_admin_client.mint(&user, &1000);
+
+    let rate = 10;
+    let meter_id = client.register_meter(&user, &provider, &rate, &token_address);
+    assert_eq!(meter_id, 1);
+
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.rate_per_unit, 10);
+    assert_eq!(meter.balance, 0);
+    assert_eq!(meter.is_active, false);
+    assert_eq!(meter.usage_data.total_watt_hours, 0);
+    assert_eq!(meter.usage_data.current_cycle_watt_hours, 0);
+    assert_eq!(meter.usage_data.peak_usage_watt_hours, 0);
+    assert_eq!(meter.usage_data.precision_factor, 1000);
+    assert_eq!(meter.max_flow_rate_per_hour, 36000);
+
+    client.top_up(&meter_id, &500);
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.balance, 500);
+    assert_eq!(meter.is_active, true);
+    assert_eq!(token.balance(&user), 500);
+    assert_eq!(token.balance(&contract_id), 500);
+
+    client.deduct_units(&meter_id, &15);
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.balance, 350);
+    assert_eq!(token.balance(&provider), 150);
+    assert_eq!(token.balance(&contract_id), 350);
+
+    client.deduct_units(&meter_id, &50);
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.balance, 0);
+    assert_eq!(meter.is_active, false);
+    assert_eq!(token.balance(&provider), 500);
+    assert_eq!(token.balance(&contract_id), 0);
+
+    client.update_usage(&meter_id, &1500);
+    let usage_data = client.get_usage_data(&meter_id).unwrap();
+    assert_eq!(usage_data.total_watt_hours, 1_500_000);
+    assert_eq!(usage_data.current_cycle_watt_hours, 1_500_000);
+    assert_eq!(usage_data.peak_usage_watt_hours, 1_500_000);
+
+    client.reset_cycle_usage(&meter_id);
+    let usage_data = client.get_usage_data(&meter_id).unwrap();
+    assert_eq!(usage_data.total_watt_hours, 1_500_000);
+    assert_eq!(usage_data.current_cycle_watt_hours, 0);
+    assert_eq!(usage_data.peak_usage_watt_hours, 1_500_000);
+
+    client.update_usage(&meter_id, &2000);
+    let usage_data = client.get_usage_data(&meter_id).unwrap();
+    assert_eq!(usage_data.total_watt_hours, 3_500_000);
+    assert_eq!(usage_data.current_cycle_watt_hours, 2_000_000);
+    assert_eq!(usage_data.peak_usage_watt_hours, 2_000_000);
+
+    let display_total = UtilityContract::get_watt_hours_display(
+        usage_data.total_watt_hours,
+        usage_data.precision_factor,
+    );
+    assert_eq!(display_total, 3500);
+}
+
+#[test]
+fn test_max_flow_rate_cap() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(UtilityContract, ());
+    let client = UtilityContractClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin.clone());
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+    token_admin_client.mint(&user, &60_000);
+
+    let meter_id = client.register_meter(&user, &provider, &100, &token_address);
+    client.set_max_flow_rate(&meter_id, &5000);
+    client.top_up(&meter_id, &60_000);
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 120);
+    client.claim(&meter_id);
+
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.claimed_this_hour, 5000);
+    assert_eq!(meter.balance, 55_000);
+}
+
+#[test]
+fn test_calculate_expected_depletion() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(UtilityContract, ());
+    let client = UtilityContractClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin.clone());
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+    token_admin_client.mint(&user, &1000);
+
+    let meter_id = client.register_meter(&user, &provider, &10, &token_address);
+    client.top_up(&meter_id, &500);
+
+    let depletion_time = client.calculate_expected_depletion(&meter_id).unwrap();
+    let current_time = env.ledger().timestamp();
+    assert_eq!(depletion_time, current_time + 50);
+}
+
+#[test]
+fn test_emergency_shutdown() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(UtilityContract, ());
+    let client = UtilityContractClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin.clone());
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+    token_admin_client.mint(&user, &1000);
+
+    let meter_id = client.register_meter(&user, &provider, &10, &token_address);
+    client.top_up(&meter_id, &500);
+
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert!(meter.is_active);
+
+    client.emergency_shutdown(&meter_id);
+
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert!(!meter.is_active);
+}
+
+#[test]
+fn test_heartbeat_functionality() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(UtilityContract, ());
+    let client = UtilityContractClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin.clone());
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+    token_admin_client.mint(&user, &1000);
+
+    let meter_id = client.register_meter(&user, &provider, &10, &token_address);
+
+    assert!(!client.is_meter_offline(&meter_id));
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 3700);
+    assert!(client.is_meter_offline(&meter_id));
+
+    client.update_heartbeat(&meter_id);
+    assert!(!client.is_meter_offline(&meter_id));
+}
+
+#[test]
 fn test_claim_within_daily_limit_tracks_withdrawn() {
     let env = Env::default();
     env.mock_all_auths();
@@ -14,35 +201,16 @@ fn test_claim_within_daily_limit_tracks_withdrawn() {
 
     let user = Address::generate(&env);
     let provider = Address::generate(&env);
-
-    // Setup a token
     let token_admin = Address::generate(&env);
     let token_address = env.register_stellar_asset_contract(token_admin.clone());
     let token = token::Client::new(&env, &token_address);
     let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
 
-    // Initial funding
     token_admin_client.mint(&user, &1000);
 
-    // 1. Register Meter
-    let rate = 10; // 10 tokens per second
-    let meter_id = client.register_meter(&user, &provider, &rate, &token_address);
-    assert_eq!(meter_id, 1);
-
-    let meter = client.get_meter(&meter_id).unwrap();
-    assert_eq!(meter.rate_per_second, 10);
-    assert_eq!(meter.balance, 0);
-    assert_eq!(meter.is_active, false);
-
-    // 2. Top up
+    let meter_id = client.register_meter(&user, &provider, &10, &token_address);
     client.top_up(&meter_id, &500);
-    let meter = client.get_meter(&meter_id).unwrap();
-    assert_eq!(meter.balance, 500);
-    assert_eq!(meter.is_active, true);
-    assert_eq!(token.balance(&user), 500);
-    assert_eq!(token.balance(&contract_id), 500);
 
-    // 3. Claim within the 10% daily limit
     env.ledger().set_timestamp(env.ledger().timestamp() + 5);
     client.claim(&meter_id);
 
@@ -56,7 +224,7 @@ fn test_claim_within_daily_limit_tracks_withdrawn() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")]
+#[should_panic(expected = "Error(Contract, #3)")]
 fn test_claim_reverts_when_daily_limit_is_exceeded() {
     let env = Env::default();
     env.mock_all_auths();
@@ -97,6 +265,7 @@ fn test_daily_limit_resets_after_24_hours() {
     token_admin_client.mint(&user, &1_000_000);
 
     let meter_id = client.register_meter(&user, &provider, &1, &token_address);
+    client.set_max_flow_rate(&meter_id, &1_000_000);
     client.top_up(&meter_id, &1_000_000);
 
     env.ledger()
@@ -116,7 +285,7 @@ fn test_daily_limit_resets_after_24_hours() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")]
+#[should_panic(expected = "Error(Contract, #3)")]
 fn test_daily_limit_is_shared_across_provider_meters() {
     let env = Env::default();
     env.mock_all_auths();
