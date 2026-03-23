@@ -37,6 +37,10 @@ fn test_utility_flow() {
     assert_eq!(meter.rate_per_unit, 10);
     assert_eq!(meter.balance, 0);
     assert_eq!(meter.is_active, false);
+    assert_eq!(meter.usage_data.total_watt_hours, 0);
+    assert_eq!(meter.usage_data.current_cycle_watt_hours, 0);
+    assert_eq!(meter.usage_data.peak_usage_watt_hours, 0);
+    assert_eq!(meter.usage_data.precision_factor, 1000);
     assert_eq!(meter.max_flow_rate_per_hour, 36000); // 10 * 3600
 
     // 2. Top up
@@ -66,6 +70,31 @@ fn test_utility_flow() {
     assert_eq!(meter.is_active, false);
     assert_eq!(token.balance(&provider), 500);
     assert_eq!(token.balance(&contract_id), 0);
+
+    // 5. Test usage tracking
+    client.update_usage(&meter_id, &1500); // 1.5 kWh
+    let usage_data = client.get_usage_data(&meter_id).unwrap();
+    assert_eq!(usage_data.total_watt_hours, 1500000); // 1500 * 1000 precision
+    assert_eq!(usage_data.current_cycle_watt_hours, 1500000);
+    assert_eq!(usage_data.peak_usage_watt_hours, 1500000);
+
+    // 6. Test cycle reset
+    client.reset_cycle_usage(&meter_id);
+    let usage_data = client.get_usage_data(&meter_id).unwrap();
+    assert_eq!(usage_data.total_watt_hours, 1500000); // Total remains
+    assert_eq!(usage_data.current_cycle_watt_hours, 0); // Current cycle reset
+    assert_eq!(usage_data.peak_usage_watt_hours, 1500000); // Peak remains
+
+    // 7. Test peak usage update
+    client.update_usage(&meter_id, &2000); // 2.0 kWh
+    let usage_data = client.get_usage_data(&meter_id).unwrap();
+    assert_eq!(usage_data.total_watt_hours, 3500000); // 1500 + 2000
+    assert_eq!(usage_data.current_cycle_watt_hours, 2000000); // New cycle
+    assert_eq!(usage_data.peak_usage_watt_hours, 2000000); // Updated peak
+
+    // 8. Test display helper function
+    let display_total = UtilityContract::get_watt_hours_display(usage_data.total_watt_hours, usage_data.precision_factor);
+    assert_eq!(display_total, 3500); // 3500000 / 1000 = 3500 (3.5 kWh)
 }
 
 #[test]
