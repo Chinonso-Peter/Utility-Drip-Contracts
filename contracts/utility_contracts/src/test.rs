@@ -107,6 +107,9 @@ fn test_max_flow_rate_cap() {
 
     let user = Address::generate(&env);
     let provider = Address::generate(&env);
+    let oracle = Address::generate(&env);
+
+    client.set_oracle(&oracle);
     
     // Setup a token
     let token_admin = Address::generate(&env);
