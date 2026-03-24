@@ -457,3 +457,127 @@ fn test_postpaid_top_up_settles_debt_and_resets_when_reactivated() {
     assert_eq!(token.balance(&provider), 110);
     assert_eq!(token.balance(&contract_id), 190);
 }
+
+#[test]
+fn test_prepaid_meter_flow_with_native_xlm() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(UtilityContract, ());
+    let client = UtilityContractClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    client.set_oracle(&oracle);
+
+    // Use native XLM address
+    let native_token_address = super::get_native_token_address(&env);
+    
+    // For testing, we need to set up the user with native XLM balance
+    env.budget().reset_unlimited();
+    
+    // Mint native XLM to user for testing
+    env.token().mint(&user, &1000);
+
+    let meter_id = client.register_meter(&user, &provider, &10, &native_token_address);
+    assert_eq!(meter_id, 1);
+
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.billing_type, BillingType::PrePaid);
+    assert_eq!(meter.rate_per_second, 10);
+    assert_eq!(meter.balance, 0);
+    assert_eq!(meter.debt, 0);
+    assert_eq!(meter.collateral_limit, 0);
+    assert!(!meter.is_active);
+    assert_eq!(meter.max_flow_rate_per_hour, 36000);
+
+    // Test top-up with native XLM
+    client.top_up(&meter_id, &500);
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.balance, 500);
+    assert!(meter.is_active);
+    assert_eq!(env.token().balance(&user), 500);
+    assert_eq!(env.token().balance(&contract_id), 500);
+
+    // Test claim with native XLM
+    env.ledger().set_timestamp(env.ledger().timestamp() + 5);
+    client.claim(&meter_id);
+
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.balance, 450);
+    assert_eq!(env.token().balance(&provider), 50);
+    assert_eq!(env.token().balance(&contract_id), 450);
+
+    // Test deduct units with native XLM
+    client.deduct_units(&meter_id, &15);
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.balance, 300);
+    assert_eq!(env.token().balance(&provider), 200);
+    assert_eq!(env.token().balance(&contract_id), 300);
+
+    // Test depletion with native XLM
+    client.deduct_units(&meter_id, &50);
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.balance, 0);
+    assert!(!meter.is_active);
+    assert_eq!(env.token().balance(&provider), 500);
+    assert_eq!(env.token().balance(&contract_id), 0);
+}
+
+#[test]
+fn test_postpaid_meter_flow_with_native_xlm() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(UtilityContract, ());
+    let client = UtilityContractClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    client.set_oracle(&oracle);
+
+    // Use native XLM address
+    let native_token_address = super::get_native_token_address(&env);
+    
+    // Mint native XLM to user for testing
+    env.token().mint(&user, &500);
+
+    let meter_id = client.register_meter_with_mode(
+        &user,
+        &provider,
+        &10,
+        &native_token_address,
+        &BillingType::PostPaid,
+    );
+
+    client.top_up(&meter_id, &300);
+
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.billing_type, BillingType::PostPaid);
+    assert_eq!(meter.balance, 0);
+    assert_eq!(meter.debt, 0);
+    assert_eq!(meter.collateral_limit, 300);
+    assert!(meter.is_active);
+    assert_eq!(env.token().balance(&contract_id), 300);
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 3);
+    client.claim(&meter_id);
+
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.debt, 30);
+    assert_eq!(meter.collateral_limit, 300);
+    assert!(meter.is_active);
+    assert_eq!(env.token().balance(&provider), 30);
+    assert_eq!(env.token().balance(&contract_id), 270);
+
+    client.deduct_units(&meter_id, &27);
+
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.debt, 300);
+    assert_eq!(meter.collateral_limit, 300);
+    assert!(!meter.is_active);
+    assert_eq!(env.token().balance(&provider), 300);
+    assert_eq!(env.token().balance(&contract_id), 0);
+}
