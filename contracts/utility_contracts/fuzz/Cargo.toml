@@ -1,0 +1,22 @@
+[package]
+name = "utility-contracts-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+utility_contracts = { path = ".." }
+soroban-sdk = { path = "../../..", features = ["testutils"] }
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+resolver = "2"
+
+[[bin]]
+name = "extreme_usage_fuzz"
+path = "fuzz_targets/extreme_usage_fuzz.rs"
