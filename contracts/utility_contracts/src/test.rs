@@ -112,6 +112,11 @@ fn test_max_flow_rate_cap() {
     let user = Address::generate(&env);
     let provider = Address::generate(&env);
 
+    let oracle = Address::generate(&env);
+
+    client.set_oracle(&oracle);
+    
+    // Setup a token
     let token_admin = Address::generate(&env);
     let token_address = env
         .register_stellar_asset_contract_v2(token_admin.clone())
@@ -128,6 +133,11 @@ fn test_max_flow_rate_cap() {
     env.ledger().set_timestamp(env.ledger().timestamp() + 120);
     client.claim(&meter_id);
 
+    
+    // Try to deduct more than the hourly cap (simulated via Oracle)
+    // 120 units at rate 100 should cost 12000, which exceeds 5000 cap
+    client.deduct_units(&meter_id, &120);
+    
     let meter = client.get_meter(&meter_id).unwrap();
     assert_eq!(meter.claimed_this_hour, 5000);
     assert_eq!(meter.balance, 5000);
