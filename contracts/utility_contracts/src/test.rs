@@ -4,6 +4,46 @@ use super::*;
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{token, Address, Env};
 
+// Mock price oracle for testing
+struct MockPriceOracle {
+    env: Env,
+    address: Address,
+    price: i128,
+    decimals: u32,
+}
+
+impl MockPriceOracle {
+    fn new(env: &Env, price: i128, decimals: u32) -> Self {
+        let address = Address::generate(env);
+        Self {
+            env: env.clone(),
+            address,
+            price,
+            decimals,
+        }
+    }
+    
+    fn address(&self) -> Address {
+        self.address.clone()
+    }
+    
+    fn mock_xlm_to_usd_cents(&self, xlm_amount: i128) -> i128 {
+        xlm_amount.saturating_mul(self.price) / (10_i128.pow(self.decimals))
+    }
+    
+    fn mock_usd_cents_to_xlm(&self, usd_cents: i128) -> i128 {
+        usd_cents.saturating_mul(10_i128.pow(self.decimals)) / self.price
+    }
+    
+    fn mock_get_price(&self) -> PriceData {
+        PriceData {
+            price: self.price,
+            decimals: self.decimals,
+            last_updated: self.env.ledger().timestamp(),
+        }
+    }
+}
+
 #[test]
 fn test_prepaid_meter_flow() {
     let env = Env::default();
@@ -456,4 +496,83 @@ fn test_postpaid_top_up_settles_debt_and_resets_when_reactivated() {
     assert!(meter.is_active);
     assert_eq!(token.balance(&provider), 110);
     assert_eq!(token.balance(&contract_id), 190);
+}
+
+#[test]
+fn test_xlm_to_usd_conversion_top_up() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(UtilityContract, ());
+    let client = UtilityContractClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    let provider = Address::generate(&env);
+    
+    // Create mock oracle with $1.50 per XLM (150 cents)
+    let mock_oracle = MockPriceOracle::new(&env, 150, 2);
+    client.set_oracle(&mock_oracle.address());
+
+    // Use native token (XLM) - represented by empty address for testing
+    let xlm_address = Address::generate(&env); // In real scenario, this would be native token
+    
+    let meter_id = client.register_meter(&user, &provider, &10, &xlm_address);
+    
+    // Top up with 100 XLM
+    // Should convert to 100 * 150 = 15000 cents = $150.00
+    client.top_up(&meter_id, &100);
+    
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.balance, 15000); // 100 XLM * 150 cents/XLM = 15000 cents
+    assert!(meter.is_active);
+}
+
+#[test]
+fn test_withdraw_earnings_xlm_conversion() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(UtilityContract, ());
+    let client = UtilityContractClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    let provider = Address::generate(&env);
+    
+    // Create mock oracle with $2.00 per XLM (200 cents)
+    let mock_oracle = MockPriceOracle::new(&env, 200, 2);
+    client.set_oracle(&mock_oracle.address());
+
+    let xlm_address = Address::generate(&env);
+    let meter_id = client.register_meter(&user, &provider, &10, &xlm_address);
+    
+    // Top up first to have balance
+    client.top_up(&meter_id, &100); // 100 XLM = 20000 cents
+    
+    // Withdraw 10000 cents ($100.00)
+    // Should convert to 10000 / 200 = 50 XLM
+    client.withdraw_earnings(&meter_id, &10000);
+    
+    let meter = client.get_meter(&meter_id).unwrap();
+    assert_eq!(meter.balance, 10000); // 20000 - 10000 = 10000 cents remaining
+}
+
+#[test]
+fn test_get_current_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(UtilityContract, ());
+    let client = UtilityContractClient::new(&env, &contract_id);
+
+    // No oracle set initially
+    assert!(client.get_current_rate().is_none());
+    
+    // Set oracle
+    let mock_oracle = MockPriceOracle::new(&env, 175, 2);
+    client.set_oracle(&mock_oracle.address());
+    
+    // Now should return rate
+    let rate = client.get_current_rate().unwrap();
+    assert_eq!(rate.price, 175);
+    assert_eq!(rate.decimals, 2);
 }

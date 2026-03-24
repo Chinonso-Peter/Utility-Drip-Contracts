@@ -5,6 +5,24 @@ use soroban_sdk::{
     Address, Env,
 };
 
+// Oracle client interface
+use soroban_sdk::contractclient;
+
+#[contractclient(name = "PriceOracleClient")]
+pub trait PriceOracle {
+    fn xlm_to_usd_cents(env: Env, xlm_amount: i128) -> i128;
+    fn usd_cents_to_xlm(env: Env, usd_cents: i128) -> i128;
+    fn get_price(env: Env) -> PriceData;
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct PriceData {
+    pub price: i128,
+    pub decimals: u32,
+    pub last_updated: u64,
+}
+
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum BillingType {
@@ -64,6 +82,8 @@ pub enum ContractError {
     MeterNotFound = 1,
     OracleNotSet = 2,
     WithdrawalLimitExceeded = 3,
+    PriceConversionFailed = 4,
+    InvalidTokenAmount = 5,
 }
 
 #[contract]
@@ -92,6 +112,41 @@ fn get_oracle_or_panic(env: &Env) -> Address {
     {
         Some(oracle) => oracle,
         None => panic_with_error!(env, ContractError::OracleNotSet),
+    }
+}
+
+fn convert_xlm_to_usd_if_needed(env: &Env, amount: i128, token: &Address) -> Result<i128, ContractError> {
+    // Check if the token is XLM (native token)
+    // In Stellar, the native token has address = 0
+    if token.to_string().starts_with("CA") {
+        // This is a custom token, no conversion needed
+        return Ok(amount);
+    }
+    
+    // Assume native token is XLM, convert to USD cents
+    let oracle_address = get_oracle_or_panic(env);
+    let oracle_client = PriceOracleClient::new(env, &oracle_address);
+    
+    match oracle_client.xlm_to_usd_cents(&amount) {
+        result => Ok(result),
+        _ => Err(ContractError::PriceConversionFailed),
+    }
+}
+
+fn convert_usd_to_xlm_if_needed(env: &Env, usd_cents: i128, token: &Address) -> Result<i128, ContractError> {
+    // Check if the token is XLM (native token)
+    if token.to_string().starts_with("CA") {
+        // This is a custom token, no conversion needed
+        return Ok(usd_cents);
+    }
+    
+    // Assume native token is XLM, convert from USD cents to XLM
+    let oracle_address = get_oracle_or_panic(env);
+    let oracle_client = PriceOracleClient::new(env, &oracle_address);
+    
+    match oracle_client.usd_cents_to_xlm(&usd_cents) {
+        result => Ok(result),
+        _ => Err(ContractError::PriceConversionFailed),
     }
 }
 
@@ -297,18 +352,29 @@ impl UtilityContract {
 
         let was_active = meter.is_active;
         let client = token::Client::new(&env, &meter.token);
+        
+        // Convert XLM to USD cents if needed
+        let converted_amount = match convert_xlm_to_usd_if_needed(&env, amount, &meter.token) {
+            Ok(amount) => amount,
+            Err(_) => panic_with_error!(&env, ContractError::PriceConversionFailed),
+        };
+        
+        if converted_amount <= 0 {
+            panic_with_error!(&env, ContractError::InvalidTokenAmount);
+        }
+        
         client.transfer(&meter.user, &env.current_contract_address(), &amount);
 
         match meter.billing_type {
             BillingType::PrePaid => {
-                meter.balance = meter.balance.saturating_add(amount);
+                meter.balance = meter.balance.saturating_add(converted_amount);
             }
             BillingType::PostPaid => {
-                let settlement = amount.min(meter.debt.max(0));
+                let settlement = converted_amount.min(meter.debt.max(0));
                 meter.debt = meter.debt.saturating_sub(settlement);
                 meter.collateral_limit = meter
                     .collateral_limit
-                    .saturating_add(amount.saturating_sub(settlement));
+                    .saturating_add(converted_amount.saturating_sub(settlement));
             }
         }
 
@@ -322,6 +388,14 @@ impl UtilityContract {
 
         if !was_active && meter.is_active {
             publish_active_event(&env, meter_id, now);
+        }
+        
+        // Emit conversion event if XLM was used
+        if !meter.token.to_string().starts_with("CA") {
+            env.events().publish(
+                (symbol_short!("XLMtoUSD"), meter_id), 
+                (amount, converted_amount)
+            );
         }
     }
 
@@ -483,6 +557,66 @@ impl UtilityContract {
         meter.user.require_auth();
         meter.heartbeat = env.ledger().timestamp();
         env.storage().instance().set(&DataKey::Meter(meter_id), &meter);
+    }
+
+    pub fn withdraw_earnings(env: Env, meter_id: u64, amount_usd_cents: i128) {
+        let mut meter = get_meter_or_panic(&env, meter_id);
+        meter.provider.require_auth();
+        
+        if amount_usd_cents <= 0 {
+            panic_with_error!(&env, ContractError::InvalidTokenAmount);
+        }
+        
+        let available_earnings = match meter.billing_type {
+            BillingType::PrePaid => meter.balance,
+            BillingType::PostPaid => meter.debt,
+        };
+        
+        if amount_usd_cents > available_earnings {
+            panic_with_error!(&env, ContractError::InvalidTokenAmount);
+        }
+        
+        // Convert USD cents to XLM if needed
+        let withdrawal_amount = match convert_usd_to_xlm_if_needed(&env, amount_usd_cents, &meter.token) {
+            Ok(amount) => amount,
+            Err(_) => panic_with_error!(&env, ContractError::PriceConversionFailed),
+        };
+        
+        let client = token::Client::new(&env, &meter.token);
+        client.transfer(&env.current_contract_address(), &meter.provider, &withdrawal_amount);
+        
+        // Update meter balance/debt
+        match meter.billing_type {
+            BillingType::PrePaid => {
+                meter.balance = meter.balance.saturating_sub(amount_usd_cents);
+            }
+            BillingType::PostPaid => {
+                meter.debt = meter.debt.saturating_sub(amount_usd_cents);
+            }
+        }
+        
+        let now = env.ledger().timestamp();
+        refresh_activity(&mut meter);
+        meter.last_update = now;
+        env.storage().instance().set(&DataKey::Meter(meter_id), &meter);
+        
+        // Emit conversion event if XLM was used
+        if !meter.token.to_string().starts_with("CA") {
+            env.events().publish(
+                (symbol_short!("USDtoXLM"), meter_id), 
+                (amount_usd_cents, withdrawal_amount)
+            );
+        }
+    }
+
+    pub fn get_current_rate(env: Env) -> Option<PriceData> {
+        match env.storage().instance().get::<DataKey, Address>(&DataKey::Oracle) {
+            Some(oracle_address) => {
+                let oracle_client = PriceOracleClient::new(&env, &oracle_address);
+                Some(oracle_client.get_price())
+            }
+            None => None,
+        }
     }
 
     pub fn is_meter_offline(env: Env, meter_id: u64) -> bool {

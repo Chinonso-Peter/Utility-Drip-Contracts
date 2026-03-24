@@ -969,6 +969,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "price_oracle"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "primeorder"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
