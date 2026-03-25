@@ -444,6 +444,14 @@
                           },
                           {
                             "key": {
+                              "symbol": "rate_per_unit"
+                            },
+                            "val": {
+                              "i128": "10"
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "token"
                             },
                             "val": {
@@ -618,6 +626,14 @@
                           {
                             "key": {
                               "symbol": "rate_per_second"
+                            },
+                            "val": {
+                              "i128": "10"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "rate_per_unit"
                             },
                             "val": {
                               "i128": "10"

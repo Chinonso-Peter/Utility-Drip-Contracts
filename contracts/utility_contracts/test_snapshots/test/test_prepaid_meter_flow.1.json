@@ -39,7 +39,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "i128": "1000"
+                  "i128": "10000"
                 }
               ]
             }
@@ -90,7 +90,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "500"
+                  "i128": "5000"
                 }
               ]
             }
@@ -109,7 +109,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                     },
                     {
-                      "i128": "500"
+                      "i128": "5000"
                     }
                   ]
                 }
@@ -183,7 +183,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "50"
+                  "i128": "475"
                 }
               ]
             }
@@ -265,7 +265,7 @@
   "ledger": {
     "protocol_version": 25,
     "sequence_number": 0,
-    "timestamp": 5,
+    "timestamp": 10,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
     "min_persistent_entry_ttl": 4096,
@@ -378,7 +378,7 @@
                               "symbol": "claimed_this_hour"
                             },
                             "val": {
-                              "i128": "500"
+                              "i128": "5000"
                             }
                           },
                           {
@@ -426,7 +426,7 @@
                               "symbol": "last_update"
                             },
                             "val": {
-                              "u64": "5"
+                              "u64": "10"
                             }
                           },
                           {
@@ -448,6 +448,14 @@
                           {
                             "key": {
                               "symbol": "rate_per_second"
+                            },
+                            "val": {
+                              "i128": "10"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "rate_per_unit"
                             },
                             "val": {
                               "i128": "10"
@@ -480,7 +488,7 @@
                                     "symbol": "last_reading_timestamp"
                                   },
                                   "val": {
-                                    "u64": "5"
+                                    "u64": "10"
                                   }
                                 },
                                 {
@@ -551,7 +559,7 @@
                               "symbol": "daily_withdrawn"
                             },
                             "val": {
-                              "i128": "50"
+                              "i128": "100"
                             }
                           },
                           {
@@ -559,7 +567,7 @@
                               "symbol": "last_reset"
                             },
                             "val": {
-                              "u64": "5"
+                              "u64": "10"
                             }
                           }
                         ]
@@ -831,7 +839,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "500"
+                      "i128": "5000"
                     }
                   },
                   {
@@ -883,7 +891,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "500"
+                      "i128": "5000"
                     }
                   },
                   {

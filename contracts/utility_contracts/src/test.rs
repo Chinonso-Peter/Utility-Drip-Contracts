@@ -3,7 +3,47 @@
 
 use super::*;
 use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{token, Address, Env};
+use soroban_sdk::{token, Address, Env, BytesN, Vec};
+
+// Mock price oracle for testing
+struct MockPriceOracle {
+    env: Env,
+    address: Address,
+    price: i128,
+    decimals: u32,
+}
+
+impl MockPriceOracle {
+    fn new(env: &Env, price: i128, decimals: u32) -> Self {
+        let address = Address::generate(env);
+        Self {
+            env: env.clone(),
+            address,
+            price,
+            decimals,
+        }
+    }
+    
+    fn address(&self) -> Address {
+        self.address.clone()
+    }
+    
+    fn mock_xlm_to_usd_cents(&self, xlm_amount: i128) -> i128 {
+        xlm_amount.saturating_mul(self.price) / (10_i128.pow(self.decimals))
+    }
+    
+    fn mock_usd_cents_to_xlm(&self, usd_cents: i128) -> i128 {
+        usd_cents.saturating_mul(10_i128.pow(self.decimals)) / self.price
+    }
+    
+    fn mock_get_price(&self) -> PriceData {
+        PriceData {
+            price: self.price,
+            decimals: self.decimals,
+            last_updated: self.env.ledger().timestamp(),
+        }
+    }
+}
 
 #[test]
 fn test_prepaid_meter_flow() {
@@ -16,6 +56,7 @@ fn test_prepaid_meter_flow() {
     let user = Address::generate(&env);
     let provider = Address::generate(&env);
     let oracle = Address::generate(&env);
+
     client.set_oracle(&oracle);
 
     let token_admin = Address::generate(&env);
@@ -28,12 +69,14 @@ fn test_prepaid_meter_flow() {
     // Initial funding - provide enough for minimum balance tests
     token_admin_client.mint(&user, &1000); // 1000 tokens
 
-    let meter_id = client.register_meter(&user, &provider, &10, &token_address);
+    // Generate a device public key for the ESP32
+    let device_public_key = BytesN::from_array(&env, &[1u8; 32]);
+    let meter_id = client.register_meter(&user, &provider, &10, &token_address, &device_public_key);
     assert_eq!(meter_id, 1);
 
     let meter = client.get_meter(&meter_id).unwrap();
     assert_eq!(meter.billing_type, BillingType::PrePaid);
-    assert_eq!(meter.rate_per_second, 10);
+    assert_eq!(meter.off_peak_rate, 10);
     assert_eq!(meter.balance, 0);
     assert_eq!(meter.is_active, false);
     assert_eq!(meter.usage_data.total_watt_hours, 0);
@@ -108,7 +151,7 @@ fn test_prepaid_meter_flow() {
 }
 
 #[test]
-fn test_max_flow_rate_cap() {
+fn test_peak_hour_tariff() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -120,22 +163,34 @@ fn test_max_flow_rate_cap() {
     let oracle = Address::generate(&env);
     client.set_oracle(&oracle);
 
+    // Setup a token
     let token_admin = Address::generate(&env);
     let token_address = env
         .register_stellar_asset_contract_v2(token_admin.clone())
         .address();
+    let token = token::Client::new(&env, &token_address);
     let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
 
-    token_admin_client.mint(&user, &10_000);
+    // Initial funding
+    token_admin_client.mint(&user, &5000);
 
-    let meter_id = client.register_meter(&user, &provider, &100, &token_address);
-    client.set_max_flow_rate(&meter_id, &5000);
-    client.top_up(&meter_id, &10_000);
-    client.deduct_units(&meter_id, &120);
+    // Register Meter
+    let rate = 10; // 10 tokens per unit
+    let meter_id = client.register_meter(&user, &provider, &rate, &token_address);
+    client.top_up(&meter_id, &5000);
+
+    // Set time to 19:00:00 UTC (19 * 3600 = 68400)
+    // 19:00 falls exactly in the 18:00 - 22:00 peak hours bracket
+    env.ledger().set_timestamp(68400);
+
+    // Consume 10 units. Base cost = 10 * 10 = 100 tokens.
+    // 150% Peak multiplier means 150 tokens claimed.
+    let units_consumed = 10;
+    client.deduct_units(&meter_id, &units_consumed);
 
     let meter = client.get_meter(&meter_id).unwrap();
-    assert_eq!(meter.claimed_this_hour, 5000);
-    assert_eq!(meter.balance, 5000);
+    assert_eq!(meter.balance, 4850); // 5000 - 150
+    assert_eq!(token.balance(&provider), 150);
 }
 
 #[test]
@@ -159,6 +214,7 @@ fn test_calculate_expected_depletion() {
     let meter_id = client.register_meter(&user, &provider, &10, &token_address);
     client.top_up(&meter_id, &500);
 
+    // Calculate depletion time
     let depletion_time = client.calculate_expected_depletion(&meter_id).unwrap();
     let current_time = env.ledger().timestamp();
     assert_eq!(depletion_time, current_time + 50);

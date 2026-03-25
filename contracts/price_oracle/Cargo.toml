@@ -1,5 +1,5 @@
 [package]
-name = "utility_contracts"
+name = "price_oracle"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -13,4 +13,3 @@ soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-cargo-fuzz = "0.11"

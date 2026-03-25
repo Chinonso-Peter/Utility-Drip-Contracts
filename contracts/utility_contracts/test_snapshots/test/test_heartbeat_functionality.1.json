@@ -291,6 +291,14 @@
                           },
                           {
                             "key": {
+                              "symbol": "rate_per_unit"
+                            },
+                            "val": {
+                              "i128": "10"
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "token"
                             },
                             "val": {
