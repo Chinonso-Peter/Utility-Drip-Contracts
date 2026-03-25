@@ -905,6 +905,27 @@ impl UtilityContract {
     pub fn get_watt_hours_display(watt_hours: i128, precision_factor: i128) -> i128 {
         watt_hours / precision_factor
     }
+
+    /// Unlink a meter from its current tenant and link it to a new tenant.
+    /// All historical usage data is preserved. Requires auth from the current
+    /// user, the new user, and the provider.
+    pub fn transfer_meter_ownership(env: Env, meter_id: u64, new_user: Address) {
+        let mut meter = get_meter_or_panic(&env, meter_id);
+
+        meter.user.require_auth();
+        meter.provider.require_auth();
+        new_user.require_auth();
+
+        let old_user = meter.user.clone();
+        meter.user = new_user.clone();
+
+        env.storage().instance().set(&DataKey::Meter(meter_id), &meter);
+
+        env.events().publish(
+            (symbol_short!("Transfer"), meter_id),
+            (old_user, new_user),
+        );
+    }
 }
 
 mod test;
