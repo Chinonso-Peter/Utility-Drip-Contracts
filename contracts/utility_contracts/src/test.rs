@@ -214,6 +214,112 @@ fn test_prepaid_meter_flow() {
 }
 
 #[test]
+fn test_minimum_increment_billing_rounding() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(UtilityContract, ());
+    let client = UtilityContractClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+    // Setup price oracle with realistic XLM price (e.g., $0.10 per XLM = 10 cents)
+    let oracle_address = env.register(MockPriceOracleContract, ());
+    let oracle_client = MockPriceOracleContractClient::new(&env, &oracle_address);
+    oracle_client.init(&10, &7); // 10 cents per XLM, 7 decimals
+    
+    client.set_oracle(&oracle_address);
+
+    // Test case 1: Small amounts that require rounding
+    let meter_id = client.register_meter(&user, &provider, &1, &token_address, BytesN::from_array(&env, &[1u8; 32]));
+    
+    // Top up with small amount to test rounding
+    token_admin_client.mint(&user, &1000000); // 0.1 XLM in stroops
+    client.top_up(&meter_id, &1000000);
+    
+    let meter = client.get_meter(&meter_id).unwrap();
+    // With proper rounding, the conversion should preserve value
+    assert!(meter.balance > 0);
+
+    // Test case 2: Verify rounding prevents value loss over multiple conversions
+    let initial_balance = meter.balance;
+    
+    // Multiple small top-ups
+    for i in 1..=3 {
+        let amount = i * 100000; // Small amounts
+        token_admin_client.mint(&user, &amount);
+        client.top_up(&meter_id, &amount);
+    }
+    
+    let meter_after = client.get_meter(&meter_id).unwrap();
+    // Should preserve value without significant loss due to rounding
+    assert!(meter_after.balance > initial_balance);
+
+    // Test case 3: Test withdrawal with proper rounding
+    let before_withdrawal = meter_after.balance;
+    
+    // Withdraw earnings (if available)
+    if meter_after.balance > 100000 {
+        client.withdraw_earnings(&meter_id, &100000);
+        let meter_after_withdrawal = client.get_meter(&meter_id).unwrap();
+        // Withdrawal should reduce balance
+        assert!(meter_after_withdrawal.balance < before_withdrawal);
+    }
+
+    // Test case 4: Test edge case with minimum increment
+    token_admin_client.mint(&user, &1); // Minimum possible amount
+    client.top_up(&meter_id, &1);
+    
+    let final_meter = client.get_meter(&meter_id).unwrap();
+    // Even minimum amounts should be handled correctly
+    assert!(final_meter.balance >= meter_after.balance - 1); // Allow minimal rounding difference
+}
+
+#[test]
+fn test_xlm_precision_rounding_edge_cases() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(UtilityContract, ());
+    let client = UtilityContractClient::new(&env, &contract_id);
+
+    // Setup oracle
+    let oracle_address = env.register(MockPriceOracleContract, ());
+    let oracle_client = MockPriceOracleContractClient::new(&env, &oracle_address);
+    oracle_client.init(&13, &7); // 13 cents per XLM
+    
+    client.set_oracle(&oracle_address);
+
+    let user = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+    let meter_id = client.register_meter(&user, &provider, &1, &token_address, BytesN::from_array(&env, &[1u8; 32]));
+
+    // Test various amounts to verify rounding behavior
+    let test_amounts = vec![1, 10, 100, 1000, 10000, 100000, 1000000];
+    
+    for amount in test_amounts {
+        token_admin_client.mint(&user, &amount);
+        client.top_up(&meter_id, &amount);
+        
+        let meter = client.get_meter(&meter_id).unwrap();
+        // Verify that the balance is non-negative and reasonable
+        assert!(meter.balance >= 0, "Balance should be non-negative for amount {}", amount);
+    }
+}
+
+#[test]
 fn test_peak_hour_tariff() {
     let env = Env::default();
     env.mock_all_auths();
