@@ -7,9 +7,6 @@ members = [
 [workspace.dependencies]
 soroban-sdk = "25"
 
-[dev-dependencies]
-cargo-tarpaulin = "0.27"
-
 [profile.release]
 opt-level = "z"
 overflow-checks = true
