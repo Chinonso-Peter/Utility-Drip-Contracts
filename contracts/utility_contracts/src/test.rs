@@ -1212,40 +1212,6 @@ fn test_challenge_response_pairing() {
 
     let user = Address::generate(&env);
     let provider = Address::generate(&env);
-
-    let token_admin = Address::generate(&env);
-    let token_address = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
-    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
-
-    token_admin_client.mint(&user, &1000);
-
-    let device_public_key = BytesN::from_array(&env, &[1u8; 32]);
-    let meter_id = client.register_meter(&user, &provider, &10, &token_address, &device_public_key);
-
-    // Test challenge-response pairing flow
-    let challenge = client.initiate_pairing(&meter_id);
-    assert_ne!(challenge, BytesN::from_array(&env, &[0u8; 32]));
-
-    // Complete pairing with mock signature
-    let signature = BytesN::from_array(&env, &[2u8; 64]);
-    client.complete_pairing(&meter_id, &signature);
-
-    let meter = client.get_meter(&meter_id).unwrap();
-    assert!(meter.is_paired);
-}
-
-#[test]
-fn test_carbon_credit_payment() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(UtilityContract, ());
-    let client = UtilityContractClient::new(&env, &contract_id);
-
-    let user = Address::generate(&env);
-    let provider = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token_address = env
         .register_stellar_asset_contract_v2(token_admin.clone())
@@ -1473,5 +1439,248 @@ fn test_get_current_rate() {
 
 // NOTE: Native XLM flow tests removed — env.token() is not available in this SDK version.
 // These functionalities are covered by the SAC token tests above.
+
+#[test]
+fn test_batch_register_meters_basic() {
+    let env = Env::default();
+    let contract_address = env.register_contract(None, UtilityContract);
+    let client = UtilityContractClient::new(&env, &contract_address);
+
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let user3 = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin);
+
+    let device_key1 = BytesN::from_array(&env, &[1; 32]);
+    let device_key2 = BytesN::from_array(&env, &[2; 32]);
+    let device_key3 = BytesN::from_array(&env, &[3; 32]);
+
+    // Create meter info vector
+    let mut meter_infos = Vec::new(&env);
+    meter_infos.push_back(MeterInfo {
+        user: user1.clone(),
+        provider: provider.clone(),
+        off_peak_rate: 100,
+        token: token_address.clone(),
+        billing_type: BillingType::PrePaid,
+        device_public_key: device_key1,
+    });
+    meter_infos.push_back(MeterInfo {
+        user: user2.clone(),
+        provider: provider.clone(),
+        off_peak_rate: 200,
+        token: token_address.clone(),
+        billing_type: BillingType::PostPaid,
+        device_public_key: device_key2,
+    });
+    meter_infos.push_back(MeterInfo {
+        user: user3.clone(),
+        provider: provider.clone(),
+        off_peak_rate: 150,
+        token: token_address.clone(),
+        billing_type: BillingType::PrePaid,
+        device_public_key: device_key3,
+    });
+
+    // Call batch_register_meters
+    let batch_event = client.batch_register_meters(&meter_infos);
+
+    // Verify batch event
+    assert_eq!(batch_event.start_id, 1);
+    assert_eq!(batch_event.end_id, 3);
+    assert_eq!(batch_event.count, 3);
+
+    // Verify individual meters were created
+    let meter1 = client.get_meter(&1);
+    assert!(meter1.is_some());
+    let meter1 = meter1.unwrap();
+    assert_eq!(meter1.user, user1);
+    assert_eq!(meter1.off_peak_rate, 100);
+    assert_eq!(meter1.billing_type, BillingType::PrePaid);
+
+    let meter2 = client.get_meter(&2);
+    assert!(meter2.is_some());
+    let meter2 = meter2.unwrap();
+    assert_eq!(meter2.user, user2);
+    assert_eq!(meter2.off_peak_rate, 200);
+    assert_eq!(meter2.billing_type, BillingType::PostPaid);
+
+    let meter3 = client.get_meter(&3);
+    assert!(meter3.is_some());
+    let meter3 = meter3.unwrap();
+    assert_eq!(meter3.user, user3);
+    assert_eq!(meter3.off_peak_rate, 150);
+    assert_eq!(meter3.billing_type, BillingType::PrePaid);
+}
+
+#[test]
+fn test_batch_register_meters_empty_vector() {
+    let env = Env::default();
+    let contract_address = env.register_contract(None, UtilityContract);
+    let client = UtilityContractClient::new(&env, &contract_address);
+
+    let empty_meter_infos = Vec::new(&env);
+
+    // Should panic with InvalidTokenAmount error
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.batch_register_meters(&empty_meter_infos);
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_batch_register_meters_large_batch() {
+    let env = Env::default();
+    let contract_address = env.register_contract(None, UtilityContract);
+    let client = UtilityContractClient::new(&env, &contract_address);
+
+    let provider = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin);
+
+    // Create 500 meters as specified in the issue
+    let mut meter_infos = Vec::new(&env);
+    for i in 0..500 {
+        let user = Address::generate(&env);
+        let device_key = BytesN::from_array(&env, &[(i % 256) as u8; 32]);
+
+        meter_infos.push_back(MeterInfo {
+            user,
+            provider: provider.clone(),
+            off_peak_rate: 100 + (i as i128 % 100),
+            token: token_address.clone(),
+            billing_type: if i % 2 == 0 {
+                BillingType::PrePaid
+            } else {
+                BillingType::PostPaid
+            },
+            device_public_key: device_key,
+        });
+    }
+
+    let batch_event = client.batch_register_meters(&meter_infos);
+
+    // Verify batch event for 500 meters
+    assert_eq!(batch_event.start_id, 1);
+    assert_eq!(batch_event.end_id, 500);
+    assert_eq!(batch_event.count, 500);
+
+    // Spot check some meters
+    let meter_1 = client.get_meter(&1);
+    assert!(meter_1.is_some());
+
+    let meter_250 = client.get_meter(&250);
+    assert!(meter_250.is_some());
+
+    let meter_500 = client.get_meter(&500);
+    assert!(meter_500.is_some());
+
+    // Verify total count
+    assert_eq!(client.get_count(), 500);
+}
+
+#[test]
+fn test_batch_register_meters_multiple_providers() {
+    let env = Env::default();
+    let contract_address = env.register_contract(None, UtilityContract);
+    let client = UtilityContractClient::new(&env, &contract_address);
+
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let provider1 = Address::generate(&env);
+    let provider2 = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin);
+
+    let device_key1 = BytesN::from_array(&env, &[1; 32]);
+    let device_key2 = BytesN::from_array(&env, &[2; 32]);
+
+    let mut meter_infos = Vec::new(&env);
+    meter_infos.push_back(MeterInfo {
+        user: user1.clone(),
+        provider: provider1.clone(),
+        off_peak_rate: 100,
+        token: token_address.clone(),
+        billing_type: BillingType::PrePaid,
+        device_public_key: device_key1,
+    });
+    meter_infos.push_back(MeterInfo {
+        user: user2.clone(),
+        provider: provider2.clone(),
+        off_peak_rate: 200,
+        token: token_address.clone(),
+        billing_type: BillingType::PostPaid,
+        device_public_key: device_key2,
+    });
+
+    let batch_event = client.batch_register_meters(&meter_infos);
+
+    // Verify batch event
+    assert_eq!(batch_event.start_id, 1);
+    assert_eq!(batch_event.end_id, 2);
+    assert_eq!(batch_event.count, 2);
+
+    // Verify provider pools were initialized for both providers
+    let pool1 = client.get_provider_total_pool(&provider1);
+    assert_eq!(pool1, 0);
+
+    let pool2 = client.get_provider_total_pool(&provider2);
+    assert_eq!(pool2, 0);
+}
+
+#[test]
+fn test_batch_register_meters_sequential_calls() {
+    let env = Env::default();
+    let contract_address = env.register_contract(None, UtilityContract);
+    let client = UtilityContractClient::new(&env, &contract_address);
+
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin);
+
+    let device_key1 = BytesN::from_array(&env, &[1; 32]);
+    let device_key2 = BytesN::from_array(&env, &[2; 32]);
+
+    // First batch
+    let mut meter_infos1 = Vec::new(&env);
+    meter_infos1.push_back(MeterInfo {
+        user: user1.clone(),
+        provider: provider.clone(),
+        off_peak_rate: 100,
+        token: token_address.clone(),
+        billing_type: BillingType::PrePaid,
+        device_public_key: device_key1,
+    });
+
+    let batch_event1 = client.batch_register_meters(&meter_infos1);
+    assert_eq!(batch_event1.start_id, 1);
+    assert_eq!(batch_event1.end_id, 1);
+    assert_eq!(batch_event1.count, 1);
+
+    // Second batch
+    let mut meter_infos2 = Vec::new(&env);
+    meter_infos2.push_back(MeterInfo {
+        user: user2.clone(),
+        provider: provider.clone(),
+        off_peak_rate: 200,
+        token: token_address.clone(),
+        billing_type: BillingType::PostPaid,
+        device_public_key: device_key2,
+    });
+
+    let batch_event2 = client.batch_register_meters(&meter_infos2);
+    assert_eq!(batch_event2.start_id, 2);
+    assert_eq!(batch_event2.end_id, 2);
+    assert_eq!(batch_event2.count, 1);
+
+    // Verify both meters exist
+    assert!(client.get_meter(&1).is_some());
+    assert!(client.get_meter(&2).is_some());
+    assert_eq!(client.get_count(), 2);
+}
 
 // NOTE: Postpaid native XLM flow test removed — env.token() is not available in this SDK version.

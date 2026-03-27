@@ -101,6 +101,25 @@ pub struct ProviderWithdrawalWindow {
 }
 
 #[contracttype]
+#[derive(Clone)]
+pub struct MeterInfo {
+    pub user: Address,
+    pub provider: Address,
+    pub off_peak_rate: i128,
+    pub token: Address,
+    pub billing_type: BillingType,
+    pub device_public_key: BytesN<32>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct BatchCreatedEvent {
+    pub start_id: u64,
+    pub end_id: u64,
+    pub count: u64,
+}
+
+#[contracttype]
 pub enum DataKey {
     Meter(u64),
     ProviderWindow(Address),
@@ -386,7 +405,7 @@ fn apply_provider_withdrawal_limit(
     }
 
     let total_pool_before_claim =
-        get_provider_total_pool(env, provider).saturating_add(window.daily_withdrawn);
+        get_provider_total_pool_impl(&env, provider).saturating_add(window.daily_withdrawn);
     let daily_limit = total_pool_before_claim / DAILY_WITHDRAWAL_PERCENT;
 
     if window.daily_withdrawn.saturating_add(amount) > daily_limit {
@@ -515,8 +534,8 @@ impl UtilityContract {
         };
 
         let meter = Meter {
-            user,
-            provider,
+            user: user.clone(),
+            provider: provider.clone(),
             billing_type,
             off_peak_rate,
             peak_rate,
@@ -547,6 +566,109 @@ impl UtilityContract {
             .set(&DataKey::ProviderTotalPool(provider), &current_pool);
 
         count
+    }
+
+    pub fn batch_register_meters(env: Env, meter_infos: Vec<MeterInfo>) -> BatchCreatedEvent {
+        if meter_infos.is_empty() {
+            panic_with_error!(&env, ContractError::InvalidTokenAmount);
+        }
+
+        // Require authorization for all users in the batch
+        for meter_info in meter_infos.iter() {
+            meter_info.user.require_auth();
+        }
+
+        let mut count = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::Count)
+            .unwrap_or(0);
+
+        let start_id = count + 1;
+        let now = env.ledger().timestamp();
+
+        // Track providers initialized to avoid duplicate initialization
+        let mut providers_initialized: Vec<Address> = Vec::new(&env);
+
+        for meter_info in meter_infos.iter() {
+            count += 1;
+
+            let provider_clone = meter_info.provider.clone();
+            let peak_rate = meter_info
+                .off_peak_rate
+                .saturating_mul(PEAK_RATE_MULTIPLIER)
+                / RATE_PRECISION;
+
+            let usage_data = UsageData {
+                total_watt_hours: 0,
+                current_cycle_watt_hours: 0,
+                peak_usage_watt_hours: 0,
+                last_reading_timestamp: now,
+                precision_factor: 1000,
+            };
+
+            let meter = Meter {
+                user: meter_info.user.clone(),
+                provider: provider_clone.clone(),
+                billing_type: meter_info.billing_type,
+                off_peak_rate: meter_info.off_peak_rate,
+                peak_rate,
+                rate_per_second: meter_info.off_peak_rate,
+                rate_per_unit: meter_info.off_peak_rate,
+                balance: 0,
+                debt: 0,
+                collateral_limit: 0,
+                last_update: now,
+                is_active: false,
+                token: meter_info.token.clone(),
+                usage_data,
+                max_flow_rate_per_hour: meter_info
+                    .off_peak_rate
+                    .saturating_mul(HOUR_IN_SECONDS as i128),
+                last_claim_time: now,
+                claimed_this_hour: 0,
+                heartbeat: now,
+                device_public_key: meter_info.device_public_key,
+                is_paired: false,
+            };
+
+            env.storage().instance().set(&DataKey::Meter(count), &meter);
+
+            // Initialize provider total pool only once per provider
+            let mut already_initialized = false;
+            for provider in providers_initialized.iter() {
+                if provider.clone() == provider_clone {
+                    already_initialized = true;
+                    break;
+                }
+            }
+
+            if !already_initialized {
+                let current_pool = get_provider_total_pool_impl(&env, &provider_clone);
+                env.storage().instance().set(
+                    &DataKey::ProviderTotalPool(provider_clone.clone()),
+                    &current_pool,
+                );
+                providers_initialized.push_back(provider_clone);
+            }
+        }
+
+        // Update the global count
+        env.storage().instance().set(&DataKey::Count, &count);
+
+        let batch_event = BatchCreatedEvent {
+            start_id,
+            end_id: count,
+            count: count - start_id + 1,
+        };
+
+        // Emit single BatchCreated event
+        env.events().publish(
+            symbol_short!("BatchCreated"),
+            (batch_event.start_id, batch_event.end_id, batch_event.count),
+        );
+
+        batch_event
     }
 
     pub fn top_up(env: Env, meter_id: u64, amount: i128) {
@@ -660,7 +782,7 @@ impl UtilityContract {
         // Clear the challenge
         env.storage()
             .instance()
-            .remove::<DataKey, BytesN<32>>(&DataKey::PairingChallenge(meter_id));
+            .remove(&DataKey::PairingChallenge(meter_id));
 
         meter.is_paired = true;
         env.storage()
@@ -676,7 +798,9 @@ impl UtilityContract {
         meter.provider.require_auth();
 
         // Verify the signature and pairing
-        verify_usage_signature(&env, &signed_data, &meter)?;
+        if let Err(e) = verify_usage_signature(&env, &signed_data, &meter) {
+            panic_with_error!(&env, e);
+        }
 
         // Store old meter value for pool update
         let old_meter_value = provider_meter_value(&meter);
@@ -912,12 +1036,38 @@ impl UtilityContract {
             .get::<DataKey, Meter>(&DataKey::Meter(meter_id))
     }
 
+    pub fn get_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::Count)
+            .unwrap_or(0)
+    }
+
     pub fn get_provider_window(env: Env, provider: Address) -> Option<ProviderWithdrawalWindow> {
         env.storage()
             .instance()
             .get(&DataKey::ProviderWindow(provider))
     }
 
+    pub fn get_provider_total_pool(env: Env, provider: Address) -> i128 {
+        get_provider_total_pool_impl(&env, &provider)
+    }
+
+    pub fn get_watt_hours_display(precise_watt_hours: i128, precision_factor: i128) -> i128 {
+        if precision_factor <= 0 {
+            return precise_watt_hours; // Fallback to avoid division by zero
+        }
+        precise_watt_hours / precision_factor
+    }
+
+    pub fn calculate_expected_depletion(env: Env, meter_id: u64) -> Option<u64> {
+        if let Some(meter) = env
+            .storage()
+            .instance()
+            .get::<_, Meter>(&DataKey::Meter(meter_id))
+        {
+            if meter.balance <= 0 || meter.rate_per_unit <= 0 {
+                return Some(0); // Already depleted or no consumption
             }
 
             let seconds_until_depletion = meter.balance / meter.rate_per_unit;
