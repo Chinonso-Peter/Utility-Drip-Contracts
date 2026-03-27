@@ -20,3 +20,7 @@ resolver = "2"
 [[bin]]
 name = "extreme_usage_fuzz"
 path = "fuzz_targets/extreme_usage_fuzz.rs"
+
+[[bin]]
+name = "debt_calculation_fuzz"
+path = "fuzz_targets/debt_calculation_fuzz.rs"
