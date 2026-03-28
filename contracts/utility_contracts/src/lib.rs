@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contracttype, contractimpl, Address, Env, token};
+use soroban_sdk::{contract, contracttype, contractimpl, Address, Env, token, Symbol};
 
 mod gas_estimator;
 use gas_estimator::{GasCostEstimator, LargeScaleCostEstimate};
@@ -9,7 +9,7 @@ use gas_estimator::{GasCostEstimator, LargeScaleCostEstimate};
 pub struct Meter {
     pub user: Address,
     pub provider: Address,
-    pub rate_per_second: i128,
+    pub rate_per_unit: i128,
     pub balance: i128,
     pub last_update: u64,
     pub is_active: bool,
@@ -52,9 +52,7 @@ pub struct LowBalanceAlert {
 pub enum DataKey {
     Meter(u64),
     Count,
-    BillingGroup(Address),
-    WebhookConfig(Address),
-    LastAlert(u64), // meter_id -> timestamp of last alert
+    Oracle,
 }
 
 #[contract]
@@ -62,6 +60,10 @@ pub struct UtilityContract;
 
 #[contractimpl]
 impl UtilityContract {
+    pub fn set_oracle(env: Env, oracle: Address) {
+        env.storage().instance().set(&DataKey::Oracle, &oracle);
+    }
+
     pub fn register_meter(
         env: Env,
         user: Address,
@@ -77,7 +79,7 @@ impl UtilityContract {
         let meter = Meter {
             user,
             provider,
-            rate_per_second: rate,
+            rate_per_unit: rate,
             balance: 0,
             last_update: env.ledger().timestamp(),
             is_active: false,
@@ -114,61 +116,40 @@ impl UtilityContract {
         env.storage().instance().set(&DataKey::Meter(meter_id), &meter);
     }
 
-    pub fn set_max_flow_rate(env: Env, meter_id: u64, max_rate: i128) {
-        let mut meter: Meter = env.storage().instance().get(&DataKey::Meter(meter_id)).ok_or("Meter not found").unwrap();
-        meter.user.require_auth();
-        
-        meter.max_flow_rate_per_hour = max_rate;
-        env.storage().instance().set(&DataKey::Meter(meter_id), &meter);
-    }
+    pub fn deduct_units(env: Env, meter_id: u64, units_consumed: i128) {
+        let oracle: Address = env.storage().instance().get(&DataKey::Oracle).expect("Oracle address not set");
+        oracle.require_auth();
 
-    pub fn claim(env: Env, meter_id: u64) {
         let mut meter: Meter = env.storage().instance().get(&DataKey::Meter(meter_id)).ok_or("Meter not found").unwrap();
-        meter.provider.require_auth();
-
-        let now = env.ledger().timestamp();
-        let elapsed = now.checked_sub(meter.last_update).unwrap_or(0);
-        let amount = (elapsed as i128) * meter.rate_per_second;
         
-        // Check if we need to reset the hourly counter
-        let hours_passed = now.checked_sub(meter.last_claim_time).unwrap_or(0) / 3600;
-        if hours_passed >= 1 {
-            meter.claimed_this_hour = 0;
-            meter.last_claim_time = now;
-        }
+        let cost = units_consumed * meter.rate_per_unit;
         
-        // Ensure we don't overdraw the balance
-        let claimable = if amount > meter.balance {
-            meter.balance
-        } else {
-            amount
-        };
-        
-        // Apply max flow rate cap
-        let final_claimable = if claimable > 0 {
-            let remaining_hourly_capacity = meter.max_flow_rate_per_hour - meter.claimed_this_hour;
-            if claimable > remaining_hourly_capacity {
-                remaining_hourly_capacity
+        if cost > 0 {
+            let actual_claim = if cost > meter.balance {
+                meter.balance
             } else {
-                claimable
-            }
-        } else {
-            0
-        };
+                cost
+            };
 
-        if final_claimable > 0 {
-            let client = token::Client::new(&env, &meter.token);
-            client.transfer(&env.current_contract_address(), &meter.provider, &final_claimable);
-            meter.balance -= final_claimable;
-            meter.claimed_this_hour += final_claimable;
+            if actual_claim > 0 {
+                let client = token::Client::new(&env, &meter.token);
+                client.transfer(&env.current_contract_address(), &meter.provider, &actual_claim);
+                meter.balance -= actual_claim;
+            }
         }
 
-        meter.last_update = now;
+        meter.last_update = env.ledger().timestamp();
         if meter.balance <= 0 {
             meter.is_active = false;
         }
 
         env.storage().instance().set(&DataKey::Meter(meter_id), &meter);
+
+        // Emit UsageReported event
+        env.events().publish(
+            (Symbol::new(&env, "UsageReported"), meter_id),
+            (units_consumed, cost)
+        );
     }
 
     pub fn get_meter(env: Env, meter_id: u64) -> Option<Meter> {

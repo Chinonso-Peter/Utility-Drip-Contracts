@@ -14,7 +14,11 @@ fn test_utility_flow() {
 
     let user = Address::generate(&env);
     let provider = Address::generate(&env);
+    let oracle = Address::generate(&env);
     
+    // Setup Oracle
+    client.set_oracle(&oracle);
+
     // Setup a token
     let token_admin = Address::generate(&env);
     let token_address = env.register_stellar_asset_contract(token_admin.clone());
@@ -25,12 +29,12 @@ fn test_utility_flow() {
     token_admin_client.mint(&user, &1000);
 
     // 1. Register Meter
-    let rate = 10; // 10 tokens per second
+    let rate = 10; // 10 tokens per unit (kWh)
     let meter_id = client.register_meter(&user, &provider, &rate, &token_address);
     assert_eq!(meter_id, 1);
 
     let meter = client.get_meter(&meter_id).unwrap();
-    assert_eq!(meter.rate_per_second, 10);
+    assert_eq!(meter.rate_per_unit, 10);
     assert_eq!(meter.balance, 0);
     assert_eq!(meter.is_active, false);
     assert_eq!(meter.max_flow_rate_per_hour, 36000); // 10 * 3600
@@ -43,19 +47,19 @@ fn test_utility_flow() {
     assert_eq!(token.balance(&user), 500);
     assert_eq!(token.balance(&contract_id), 500);
 
-    // 3. Claim balance (simulate time passing)
-    env.ledger().set_timestamp(env.ledger().timestamp() + 10); // 10 seconds pass
-    client.claim(&meter_id);
+    // 3. Report usage (billing by units)
+    let units_consumed = 15; // 15 kWh
+    client.deduct_units(&meter_id, &units_consumed);
     
     let meter = client.get_meter(&meter_id).unwrap();
-    // 10 seconds * 10 tokens/sec = 100 tokens claimed
-    assert_eq!(meter.balance, 400);
-    assert_eq!(token.balance(&provider), 100);
-    assert_eq!(token.balance(&contract_id), 400);
+    // 15 units * 10 tokens/unit = 150 tokens claimed
+    assert_eq!(meter.balance, 350);
+    assert_eq!(token.balance(&provider), 150);
+    assert_eq!(token.balance(&contract_id), 350);
 
-    // 4. Claim more than balance
-    env.ledger().set_timestamp(env.ledger().timestamp() + 50); // 50 seconds pass
-    client.claim(&meter_id);
+    // 4. Report usage that exceeds balance
+    let more_units = 50; // 50 units * 10 = 500 cost, but only 350 left
+    client.deduct_units(&meter_id, &more_units);
 
     let meter = client.get_meter(&meter_id).unwrap();
     assert_eq!(meter.balance, 0);
